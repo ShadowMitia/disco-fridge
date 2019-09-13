@@ -1,0 +1,11 @@
+* Installation and running
+
+Requires CMake and Conan.
+
+Follow these instructions :
+
+~git clone https://github.com/ShadowMitia/disco-fridge.git~
+~cd disco-fridge~
+~cmake -s . -B build -DCMAKE_BUILD_TYPE=Debug~
+~cmake --build build -- -j8~
+~./build/disco-fridge~
