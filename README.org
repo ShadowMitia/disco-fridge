@@ -1,11 +1,31 @@
+
+* Disco Fridge
+
+Created by Philippe Alfaiate, Dimitri Belopopsky, Jean Vencic.
+
+Put some disco into your fridge !
+
+
+
 * Installation and running
 
-Requires CMake and Conan.
+Requires CMake and Conan to build.
+You also need to install ~youtube_dl~ with pip3 install --user youtube_dl
+
+
+Add bincrafters : conan remote add bincrafters https://api.bintray.com/conan/bincrafters/public-conan
 
 Follow these instructions :
 
 ~git clone https://github.com/ShadowMitia/disco-fridge.git~
+
 ~cd disco-fridge~
+
 ~cmake -s . -B build -DCMAKE_BUILD_TYPE=Debug~
+
 ~cmake --build build -- -j8~
+
 ~./build/disco-fridge~
+
+
+
