@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(disco-fridge VERSION 0.0.1 LANGUAGES CXX)
 
-find_program(CCACHE ccache)
+
+#find_program(CCACHE ccache)
 if(CCACHE)
   set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE})
 endif()
@@ -104,7 +105,7 @@ else()
     target_link_libraries(project_options INTERFACE stdc++fs)
   else()
     if(LIBCPP)
-      target_compile_options(project_options INTERFACE -stdlib=libc++)
+      target_compile_options(project_options INTERFACE -stdlib=libstdc++)
     else()
       target_link_libraries(project_options INTERFACE stdc++fs)
     endif()

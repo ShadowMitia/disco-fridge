@@ -1,101 +1,95 @@
 #include <fmt/format.h>
-#include <wiringPi.h>
+#include <fmt/ostream.h>
+
 #include <chrono>
-#include <thread>
-#include <vector>
-#include <fstream>
-#include <sstream>
-#include <random>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
+#include <random>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
+#include <mutex>
+#include <fstream>
+#include <algorithm>
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
+#include <nlohmann/json.hpp>
 
-#include <curl/curl.h>
+using json = nlohmann::json;
 
+std::string toLowercase(std::string str) {
+  std::transform(str.begin(), str.end(), str.begin(),
+                 [](unsigned char c){ return std::tolower(c); });
+  return str;
+}
 
-constexpr int targetPin = 7; // GPIO4
-constexpr char const * const songURL = "http://example.com/";
-
-std::vector<std::string> split(std::string const& s, char delimiter)
-{
+std::vector<std::string> split(std::string const& s, char delimiter) {
   std::vector<std::string> tokens;
   std::string token;
   std::istringstream tokenStream(s);
-  while (std::getline(tokenStream , token, delimiter))
-    {
-      tokens.push_back(token);
-    }
+  while (std::getline(tokenStream, token, delimiter)) {
+    tokens.push_back(token);
+  }
   return tokens;
 }
 
+void downloadPlaylist(std::string url, std::filesystem::path targetFolder, std::filesystem::path archiveFile) {
+  fmt::print("Downloading playlist\n");
+  std::string youtubePlaylistDL =
+      fmt::format("youtube-dl --ignore-errors "
+                  "--prefer-free-formats -o "
+                  "'{}/%(title)s.%(ext)s' --extract-audio "
+                  " --download-archive '{}'"
+                  " --quiet '{}' --no-call-home ",
+                  targetFolder.string(), archiveFile.string(), url);
 
-static int writer(char *data, size_t size, size_t nmemb,
-                  std::string *writerData)
-{
-  if(writerData == nullptr)
-    return 0;
-
-  writerData->append(data, size*nmemb);
-
-  return size * nmemb;
+  std::system(youtubePlaylistDL.c_str());
 }
 
-int main(int argc, char* argv[]) {
-  fmt::print("Disco Fridge !!!\n");
+void getNamesInPlaylist(std::string url, std::string output) {
+  std::string youtubePlaylistNames =
+    fmt::format("youtube-dl --restrict-filenames --flat-playlist -J --quiet --ignore-errors '{}' > {}", url, output);
+  std::system(youtubePlaylistNames.c_str());
+}
 
+struct SongManager {
+private:
+  std::mt19937 gen{std::random_device()()};
 
-  char errorBuffer[CURL_ERROR_SIZE];
-  std::string buffer;
-  
-  CURL* curl = curl_easy_init();
-  CURLcode resultCode;
-
-  if (!curl) {
-    fmt::print("Couldn't initialise CURL\n");
-    return -1;
+ public:
+   std::vector<std::filesystem::path> songs;
+   void addSong(std::filesystem::path songPath) {
+     fmt::print("Adding entry : {}\n", songPath.c_str());
+     songs.push_back(songPath);
   }
 
-  resultCode = curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errorBuffer);
-  if (resultCode != CURLE_OK) {
-    fmt::print("Coudln't set error buffer {}\n", resultCode);
-    return -1;
+  std::string getRandomSong() {
+    std::string song;
+    if (songs.size() > 0) {
+      std::uniform_int_distribution<std::size_t> dis{0, songs.size() - 1};
+      song = songs[dis(gen)].string();
+    }
+    return song;
   }
-
-  resultCode = curl_easy_setopt(curl, CURLOPT_URL, songURL);
-  if (resultCode != CURLE_OK) {
-    fmt::print("Couldn't set URL {}\n", errorBuffer);
-    return -1;
-  }
-
-  resultCode = curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  if (resultCode != CURLE_OK) {
-    fmt::print("Couldn't set redirect option {}\n", errorBuffer);
-    return -1;
-  }
+};
 
 
-  resultCode = curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writer);
-  if (resultCode != CURLE_OK) {
-    fmt::print("Couldn't set write function {}\n", errorBuffer);
-    return -1;
-  }
+void waitForMilliseconds(std::chrono::milliseconds milliseconds) {
+  std::this_thread::sleep_for(milliseconds);
+}
+
+int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
+  fmt::print("Disco Fridge !\n");
+
+  std::filesystem::path pathToDiscoFridgeRootFolder("/home/dimitri/disco-fridge");
+  std::filesystem::path pathToSongs(pathToDiscoFridgeRootFolder / "songs");
+  std::filesystem::path tmpNames("/tmp/disco_fridge_downloadNames");
+  std::filesystem::path archivePath(pathToDiscoFridgeRootFolder / "archive.txt");
 
 
-  resultCode = curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
-  if (resultCode != CURLE_OK) {
-    fmt::print("Couldn't set write buffer {}\n", errorBuffer);
-    return -1;
-  }
-
-  resultCode = curl_easy_perform(curl);
-  if (resultCode != CURLE_OK) {
-    fmt::print("Couldn't get page {}\n", errorBuffer);
-    return -1;
-  }
-
-   
   if (SDL_Init(SDL_INIT_AUDIO) < 0) {
     fmt::print("Couldn't load SDL");
     return -1;
@@ -107,126 +101,100 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-  // initialise wiringPi and setup for raspberry pi
-  //  wiringPiSetup () ;
-
-  //pinMode(targetPin, INPUT);
-  //pullUpDnControl(targetPin, PUD_DOWN);
-
-  std::vector<std::string> songsURL = {
-                                    "https://www.youtube.com/watch?v=JWay7CDEyAI",
-                                    "https://www.youtube.com/watch?v=I_izvAbhExY",
-                                    "https://www.youtube.com/watch?v=16y1AkoZkmQ",
-                                    "https://www.youtube.com/watch?v=rY0WxgSXdEE"
-  };
+  std::string playlist = "https://www.youtube.com/playlist?list=PL9295WRjvNiwjb_ZStMtiy90Pyu_WayDE";
 
 
+  std::vector<std::string> names;
 
-  for (auto song : songsURL) {
-    fmt::print("Line : {}\n", song);
+  getNamesInPlaylist(playlist, tmpNames);
 
-    auto youtubeDLCommand = "youtube-dl -i --prefer-free-formats -o '~/disco-fridge/songs/%(title)s.%(ext)s'  --download-archive ~/disco-fridge/archive.txt  --extract-audio " + song;
+  std::fstream f(tmpNames, std::ios::in);
+  json j;
+  f >> j;
 
-    std::system(youtubeDLCommand.c_str());
+  for (auto entry : j["entries"]) {
+    std::string title = entry["title"];
+    fmt::print("title {}\n", title);
+    names.push_back(entry["title"]);
   }
 
+  std::fstream fileOfNames(tmpNames.string(), std::ios::in);
 
-  std::vector<std::filesystem::path> songs;
+  downloadPlaylist(playlist, pathToSongs, archivePath);
 
-  std::filesystem::path songsPath = "/home/dimitri/disco-fridge/songs";
-  for (const auto & entry : std::filesystem::directory_iterator(songsPath)) {
-    fmt::print("Entry : {}\n", entry.path().c_str());
-    songs.emplace_back(entry.path());
+  SongManager songManager;
+
+  bool archiveChanged = false;
+  for (std::filesystem::path path : std::filesystem::directory_iterator(pathToSongs)) {
+    bool found = false;
+    std::string pathName = path.stem();
+    for (std::string name : names) {
+      //fmt::print("Comparing {} with {}\n", pathName, name);
+      if (pathName.find(name) != std::string::npos) {
+        fmt::print("Adding {}\n", name);
+        songManager.addSong(path);
+        found = true;
+      }
+    }
+
+    if (!found) {
+      fmt::print("Removing {}\n", pathName);
+      archiveChanged = true;
+      std::filesystem::remove(path);
+
+      std::fstream file(archivePath, std::ios::out);
+      for (auto entry : j["entries"]) {
+        std::string output = fmt::format("{} {}\n", toLowercase(entry["ie_key"]), entry["id"]);
+        file << output;
+      }
+    }
   }
 
-  std::random_device rd;  //Will be used to obtain a seed for the random number engine
-  std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
-  std::uniform_int_distribution<int> dis(0, songs.size() - 1);
-
-
-  auto s = songs[dis(gen)].c_str();
-  Mix_Music *music = Mix_LoadMUS( s );
-
-  if (music == nullptr) {
-    fmt::print("Couldn't load music {}\n", s);
-    return 1;
+  if (archiveChanged) {
+    std::filesystem::remove(archivePath);
   }
 
-  /*
+  Mix_Music * music;
+
+  std::string s = songManager.getRandomSong();
+  music = Mix_LoadMUS(s.c_str());
+
   bool isLooping = true;
-  while (isLooping) {
-    int value = digitalRead(targetPin);
-    fmt::print("PIN {}\n", value);
 
-    std::chrono::milliseconds timespan(1000);
+  while (isLooping) {
+
+    if (songManager.size() > 0) {
+
+      if (Mix_PlayingMusic() == 0) {
+        Mix_FreeMusic(music);
+        {
+
+          std::string song = songManager.getRandomSong();
+          fmt::print("Currently playing : {}\n", song);
+          music = Mix_LoadMUS(song.c_str());
+
+          if (music == nullptr) {
+            fmt::print("Couldn't load music {}\n", song);
+          }
+        }
+
+
+        if (Mix_PlayMusic(music, 1) == -1) {
+          fmt::print("Couldn't play music");
+          return 1;
+        }
+      }
+    }
+
+    std::chrono::seconds timespan(1);
     std::this_thread::sleep_for(timespan);
   }
-  */
-
-  if( Mix_PlayingMusic() == 0 )
-    {
-      if( Mix_PlayMusic( music, -1 ) == -1 )
-        {
-          fmt::print("Couldn't play music");
-          return 1;
-        }
-    }
-
-
-  std::chrono::milliseconds timespan(2000);
-  std::this_thread::sleep_for(timespan);
-
-  Mix_HaltMusic();
-
- s = songs[dis(gen)].c_str();
- music = Mix_LoadMUS( s );
-
-  if (music == nullptr) {
-    fmt::print("Couldn't load music {}\n", s);
-    return 1;
-  }
-
-
-  if( Mix_PlayingMusic() == 0 )
-    {
-      if( Mix_PlayMusic( music, -1 ) == -1 )
-        {
-          fmt::print("Couldn't play music");
-          return 1;
-        }
-    }
-
-
-  std::this_thread::sleep_for(timespan);
-
-  Mix_HaltMusic();
-
-    s = songs[dis(gen)].c_str();
-    music = Mix_LoadMUS( s );
-
-  if (music == nullptr) {
-    fmt::print("Couldn't load music {}\n", s);
-    return 1;
-  }
-
-    if( Mix_PlayingMusic() == 0 )
-    {
-      if( Mix_PlayMusic( music, -1 ) == -1 )
-        {
-          fmt::print("Couldn't play music");
-          return 1;
-        }
-    }
-
-
-
-  std::this_thread::sleep_for(timespan);
-
-
 
   fmt::print("Exiting... Bring disco back!\n");
-  Mix_FreeMusic( music );
-  curl_easy_cleanup(curl);
-  Mix_CloseAudio();
+
+  Mix_FreeMusic(music);
+  Mix_CloseAudio();  
+
   SDL_Quit();
+  
 }
