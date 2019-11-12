@@ -16,9 +16,16 @@
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
-#include <nlohmann/json.hpp>
 
+#include <nlohmann/json.hpp>
 using json = nlohmann::json;
+
+
+struct SDLMixerMusicDestructor {
+  void operator()(Mix_Music* music) { Mix_FreeMusic(music); }
+};
+
+using MixMusicPtr = std::unique_ptr<Mix_Music, SDLMixerMusicDestructor>;
 
 std::string toLowercase(std::string str) {
   std::transform(str.begin(), str.end(), str.begin(),
@@ -39,31 +46,36 @@ std::vector<std::string> split(std::string const& s, char delimiter) {
 void downloadPlaylist(std::string url, std::filesystem::path targetFolder, std::filesystem::path archiveFile) {
   fmt::print("Downloading playlist\n");
   std::string youtubePlaylistDL =
-      fmt::format("youtube-dl --ignore-errors "
-                  "--prefer-free-formats -o "
-                  "'{}/%(title)s.%(ext)s' --extract-audio "
-                  " --download-archive '{}'"
-                  " --quiet '{}' --no-call-home ",
-                  targetFolder.string(), archiveFile.string(), url);
+    fmt::format("youtube-dl --ignore-errors "
+                "--prefer-free-formats "
+                " -o '{}/%(title)s.%(ext)s' --extract-audio "
+                " --download-archive '{}'"
+                " --quiet '{}' --no-call-home ",
+                targetFolder.string(), archiveFile.string(), url);
 
   std::system(youtubePlaylistDL.c_str());
 }
 
 void getNamesInPlaylist(std::string url, std::string output) {
   std::string youtubePlaylistNames =
-    fmt::format("youtube-dl --restrict-filenames --flat-playlist -J --quiet --ignore-errors '{}' > {}", url, output);
+    fmt::format("youtube-dl --restrict-filenames --flat-playlist -J --no-call-home --quiet --ignore-errors '{}' > {}", url, output);
   std::system(youtubePlaylistNames.c_str());
 }
 
 struct SongManager {
 private:
   std::mt19937 gen{std::random_device()()};
+  std::vector<std::filesystem::path> songs;
 
- public:
-   std::vector<std::filesystem::path> songs;
-   void addSong(std::filesystem::path songPath) {
-     fmt::print("Adding entry : {}\n", songPath.c_str());
-     songs.push_back(songPath);
+public:
+
+  std::size_t size() const {
+    return songs.size();
+  }
+
+  void addSong(std::filesystem::path songPath) {
+    fmt::print("Adding entry : {}\n", songPath.c_str());
+    songs.push_back(songPath);
   }
 
   std::string getRandomSong() {
@@ -86,8 +98,10 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
 
   std::filesystem::path pathToDiscoFridgeRootFolder("/home/dimitri/disco-fridge");
   std::filesystem::path pathToSongs(pathToDiscoFridgeRootFolder / "songs");
-  std::filesystem::path tmpNames("/tmp/disco_fridge_downloadNames");
+  std::filesystem::path tmpNames(std::filesystem::temp_directory_path() / "disco_fridge_downloadNames");
   std::filesystem::path archivePath(pathToDiscoFridgeRootFolder / "archive.txt");
+
+  std::string playlist = "https://www.youtube.com/playlist?list=PL9295WRjvNiwjb_ZStMtiy90Pyu_WayDE";
 
 
   if (SDL_Init(SDL_INIT_AUDIO) < 0) {
@@ -97,11 +111,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
 
   if( Mix_OpenAudio( 22050, MIX_DEFAULT_FORMAT, 2, 4096 ) == -1 )
     {
-          fmt::print("Couldn't load SDL_mixer");
-        return -1;
+      fmt::print("Couldn't load SDL_mixer");
+      return -1;
     }
-
-  std::string playlist = "https://www.youtube.com/playlist?list=PL9295WRjvNiwjb_ZStMtiy90Pyu_WayDE";
 
 
   std::vector<std::string> names;
@@ -109,6 +121,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
   getNamesInPlaylist(playlist, tmpNames);
 
   std::fstream f(tmpNames, std::ios::in);
+
   json j;
   f >> j;
 
@@ -129,7 +142,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     bool found = false;
     std::string pathName = path.stem();
     for (std::string name : names) {
-      //fmt::print("Comparing {} with {}\n", pathName, name);
       if (pathName.find(name) != std::string::npos) {
         fmt::print("Adding {}\n", name);
         songManager.addSong(path);
@@ -154,10 +166,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     std::filesystem::remove(archivePath);
   }
 
-  Mix_Music * music;
-
-  std::string s = songManager.getRandomSong();
-  music = Mix_LoadMUS(s.c_str());
+  MixMusicPtr music = nullptr;
 
   bool isLooping = true;
 
@@ -166,35 +175,26 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     if (songManager.size() > 0) {
 
       if (Mix_PlayingMusic() == 0) {
-        Mix_FreeMusic(music);
-        {
+        std::string song = songManager.getRandomSong();
+        fmt::print("Currently playing : {}\n", song);
+        music.reset(Mix_LoadMUS(song.c_str()));
 
-          std::string song = songManager.getRandomSong();
-          fmt::print("Currently playing : {}\n", song);
-          music = Mix_LoadMUS(song.c_str());
-
-          if (music == nullptr) {
-            fmt::print("Couldn't load music {}\n", song);
-          }
+        if (music == nullptr) {
+          fmt::print("Couldn't load music {}\n", song);
+          continue;
         }
-
-
-        if (Mix_PlayMusic(music, 1) == -1) {
-          fmt::print("Couldn't play music");
+        if (Mix_PlayMusic(music.get(), 1) == -1) {
+          fmt::print("Couldn't play music\nExiting...\n");
           return 1;
         }
       }
     }
 
     std::chrono::seconds timespan(1);
-    std::this_thread::sleep_for(timespan);
+    waitForMilliseconds(timespan);
   }
 
   fmt::print("Exiting... Bring disco back!\n");
 
-  Mix_FreeMusic(music);
-  Mix_CloseAudio();  
-
-  SDL_Quit();
-  
+  Mix_CloseAudio();
 }
