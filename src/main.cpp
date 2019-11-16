@@ -1,5 +1,4 @@
 #include <fmt/format.h>
-#include <fmt/ostream.h>
 
 #include <chrono>
 #include <cstdlib>
@@ -13,13 +12,10 @@
 #include <mutex>
 #include <fstream>
 #include <algorithm>
+#include <unordered_map>
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
-
-#include <nlohmann/json.hpp>
-using json = nlohmann::json;
-
 
 struct SDLMixerMusicDestructor {
   void operator()(Mix_Music* music) { Mix_FreeMusic(music); }
@@ -43,25 +39,6 @@ std::vector<std::string> split(std::string const& s, char delimiter) {
   return tokens;
 }
 
-void downloadPlaylist(std::string url, std::filesystem::path targetFolder, std::filesystem::path archiveFile) {
-  fmt::print("Downloading playlist\n");
-  std::string youtubePlaylistDL =
-    fmt::format("youtube-dl --ignore-errors "
-                "--prefer-free-formats "
-                " -o '{}/%(title)s.%(ext)s' --extract-audio "
-                " --download-archive '{}'"
-                " --quiet '{}' --no-call-home ",
-                targetFolder.string(), archiveFile.string(), url);
-
-  std::system(youtubePlaylistDL.c_str());
-}
-
-void getNamesInPlaylist(std::string url, std::string output) {
-  std::string youtubePlaylistNames =
-    fmt::format("youtube-dl --restrict-filenames --flat-playlist -J --no-call-home --quiet --ignore-errors '{}' > {}", url, output);
-  std::system(youtubePlaylistNames.c_str());
-}
-
 struct SongManager {
 private:
   std::mt19937 gen{std::random_device()()};
@@ -74,8 +51,16 @@ public:
   }
 
   void addSong(std::filesystem::path songPath) {
-    fmt::print("Adding entry : {}\n", songPath.c_str());
     songs.push_back(songPath);
+  }
+
+  void removeSong(std::filesystem::path songPath) {
+    for (std::size_t i = 0; i < songs.size(); i++) {
+      if (songs[i] == songPath) {
+        songs.erase(std::begin(songs) + static_cast<long int>(i));
+        return;
+      }
+    }
   }
 
   std::string getRandomSong() {
@@ -93,17 +78,64 @@ void waitForMilliseconds(std::chrono::milliseconds milliseconds) {
   std::this_thread::sleep_for(milliseconds);
 }
 
+
+
+void updateSongs(SongManager& songManager, std::filesystem::path pathToSongs, std::filesystem::path archivePath, std::vector<std::string> const& playlists) {
+
+  std::filesystem::remove(archivePath);
+
+  for (std::string url : playlists) {
+    fmt::print("Downloading {}\n", url);
+    std::string youtubePlaylistDL =
+      fmt::format("youtube-dl --ignore-errors"
+                  " --no-warnings"
+                  " --prefer-free-formats "
+                  " --ignore-errors"
+                  " --no-overwrites"
+                  " -o '{}/%(id)s.%(ext)s'"
+                  " --extract-audio "
+                  " --download-archive '{}'"
+                  " --quiet '{}' --no-call-home ",
+                  pathToSongs.string(), archivePath.string(), url);
+    std::system(youtubePlaylistDL.c_str());
+  }
+
+  std::fstream archiveFile(archivePath, std::ios::in);
+  std::string lineArchive;
+
+  std::vector<std::string> songIds;
+
+  while (std::getline(archiveFile, lineArchive)) {
+    auto data = split(lineArchive, ' ');
+    auto songName = data[1];
+    songIds.push_back(songName);
+  }
+
+  for(auto& p: std::filesystem::directory_iterator(pathToSongs)) {
+    auto it = std::find(std::begin(songIds), std::end(songIds), p.path().stem());
+    if (it != std::end(songIds)) {
+      songManager.addSong(p.path());
+    } else {
+      std::filesystem::remove(p.path());
+      songManager.removeSong(p.path());
+    }
+  }
+
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
   fmt::print("Disco Fridge !\n");
 
   std::filesystem::path pathToDiscoFridgeRootFolder("/home/dimitri/disco-fridge");
   std::filesystem::path pathToSongs(pathToDiscoFridgeRootFolder / "songs");
-  std::filesystem::path tmpNames(std::filesystem::temp_directory_path() / "disco_fridge_downloadNames");
   std::filesystem::path archivePath(pathToDiscoFridgeRootFolder / "archive.txt");
+  std::chrono::seconds updateDelay{60};
+  std::vector<std::string> playlists{
+                                     "https://www.youtube.com/playlist?list=PLeo8Y1fcAuPeODOtgrtYpzaLDuejCLcIY",
+                                     "https://www.youtube.com/watch?v=NvS351QKFV4&list=PL9295WRjvNiwjb_ZStMtiy90Pyu_WayDE"};
 
-  std::string playlist = "https://www.youtube.com/playlist?list=PL9295WRjvNiwjb_ZStMtiy90Pyu_WayDE";
-
-
+  std::filesystem::create_directories(pathToSongs);
+ 
   if (SDL_Init(SDL_INIT_AUDIO) < 0) {
     fmt::print("Couldn't load SDL");
     return -1;
@@ -115,65 +147,26 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
       return -1;
     }
 
-
-  std::vector<std::string> names;
-
-  getNamesInPlaylist(playlist, tmpNames);
-
-  std::fstream f(tmpNames, std::ios::in);
-
-  json j;
-  f >> j;
-
-  for (auto entry : j["entries"]) {
-    std::string title = entry["title"];
-    fmt::print("title {}\n", title);
-    names.push_back(entry["title"]);
-  }
-
-  std::fstream fileOfNames(tmpNames.string(), std::ios::in);
-
-  downloadPlaylist(playlist, pathToSongs, archivePath);
-
   SongManager songManager;
 
-  bool archiveChanged = false;
-  for (std::filesystem::path path : std::filesystem::directory_iterator(pathToSongs)) {
-    bool found = false;
-    std::string pathName = path.stem();
-    for (std::string name : names) {
-      if (pathName.find(name) != std::string::npos) {
-        fmt::print("Adding {}\n", name);
-        songManager.addSong(path);
-        found = true;
-      }
-    }
-
-    if (!found) {
-      fmt::print("Removing {}\n", pathName);
-      archiveChanged = true;
-      std::filesystem::remove(path);
-
-      std::fstream file(archivePath, std::ios::out);
-      for (auto entry : j["entries"]) {
-        std::string output = fmt::format("{} {}\n", toLowercase(entry["ie_key"]), entry["id"]);
-        file << output;
-      }
-    }
+  for(auto& p: std::filesystem::directory_iterator(pathToSongs)) {
+    songManager.addSong(p.path());
   }
 
-  if (archiveChanged) {
-    std::filesystem::remove(archivePath);
-  }
+  std::thread thread([&](){
+                       while (true) {
+                         updateSongs(songManager, pathToSongs, archivePath, playlists);
+                         waitForMilliseconds(updateDelay);
+                       }
+                     });
+    thread.detach();
 
   MixMusicPtr music = nullptr;
 
   bool isLooping = true;
 
   while (isLooping) {
-
     if (songManager.size() > 0) {
-
       if (Mix_PlayingMusic() == 0) {
         std::string song = songManager.getRandomSong();
         fmt::print("Currently playing : {}\n", song);
@@ -184,17 +177,19 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
           continue;
         }
         if (Mix_PlayMusic(music.get(), 1) == -1) {
-          fmt::print("Couldn't play music\nExiting...\n");
-          return 1;
+          fmt::print("Couldn't play music : {}\n", song) ;
         }
       }
+    } else {
+      fmt::print("No music found...\n");
     }
 
-    std::chrono::seconds timespan(1);
+    std::chrono::seconds timespan(5);
     waitForMilliseconds(timespan);
   }
 
   fmt::print("Exiting... Bring disco back!\n");
 
   Mix_CloseAudio();
+  Mix_Quit();
 }
